@@ -1,0 +1,106 @@
+# pylint: disable=missing-docstring
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+import time
+
+from six.moves import xrange  # pylint: disable=redefined-builtin
+import tensorflow as tf
+from pylab import *
+
+import argparse
+import cnn
+import freader_2
+
+training_feats_file = ["file_name"]
+training_lbls_file = ["file_name"]
+test_feats_file = 'file_name'
+test_lbls_file = 'file_name'
+learning_rate = 0.1
+testset_size = 1000
+batch_size = 1000
+testset_size = 793
+tot_samples = 810901
+max_steps = 3300
+
+def placeholder_inputs(batch_size):
+
+    images_placeholder = tf.placeholder(tf.float32, shape=(testset_size, cnn.IMAGE_HEIGHT, cnn.IMAGE_WIDTH, 1))
+    labels_placeholder = tf.placeholder(tf.float32, shape=(testset_size, 15))
+    return images_placeholder, labels_placeholder
+
+def reader(images_file, lbls_file, images_pl, labels_pl, im_height, im_width):
+
+    images = loadtxt(images_file)
+    labels_feed = loadtxt(lbls_file)
+    images_feed = reshape(images, [images.shape[0], im_height, im_width, 1])
+
+    feed_dict = {
+        images_pl: images_feed,
+        labels_pl: labels_feed,
+    }
+
+    return feed_dict
+
+tot_training_loss = []
+tot_test_loss = []
+tot_grad = []
+
+print('Starting TensorFlow session...')
+with tf.Graph().as_default():
+
+    DS = freader_2.XICSDataSet()
+    images, labels = DS.trainingset_files_reader(training_feats_file, training_lbls_file)
+    keep_prob = tf.placeholder(tf.float32) 
+    logits = cnn.inference(images, batch_size, keep_prob)
+    loss = cnn.loss(logits, labels)
+    global_step = tf.Variable(0, trainable=False)
+    train_op, grad_norm = cnn.training(loss, learning_rate, global_step)
+    summary_op = tf.merge_all_summaries()   
+
+    test_images_pl, test_labels_pl = placeholder_inputs(testset_size)
+    test_pred = cnn.inference(test_images_pl, testset_size, keep_prob, True)
+    test_loss = cnn.loss(test_pred, test_labels_pl)
+
+    saver = tf.train.Saver()
+    sess = tf.Session()
+    summary_writer = tf.train.SummaryWriter("CNN", sess.graph)
+
+    init = tf.initialize_all_variables()
+    sess.run(init)
+    tf.train.start_queue_runners(sess=sess)
+    test_feed = reader(test_feats_file, test_lbls_file, test_images_pl, test_labels_pl, DS.height, DS.width)
+    test_feed[keep_prob] = 1.    
+
+    # Start the training loop.
+    print('Starting training loop...')
+    start_time = time.time()
+    for step in xrange(max_steps):
+
+        _, grad, loss_value= sess.run([train_op, grad_norm, loss], feed_dict = {keep_prob:0.5})  
+        tot_training_loss.append(loss_value)
+        tot_grad.append(grad)
+
+        _, test_loss_val = sess.run([test_pred, test_loss], feed_dict=test_feed)
+        tot_test_loss.append(test_loss_val)
+
+        if step % 1 == 0:        
+            duration = time.time() - start_time
+            print('Step %d (%.3f sec):\n training loss = %f\n test loss = %f ' % (step, duration, loss_value, test_loss_val))
+            print(' gradient = %f'%grad)
+#            summary_str = sess.run(summary_op)#, feed_dict=feed_dict)
+#            summary_writer.add_summary(summary_str, step)
+#            summary_writer.flush()
+
+        if (step+1) % 100 == 0:
+            print('Saving checkpoint...')
+            saver.save(sess, "chkpts/medias-res", global_step = global_step)
+
+        if test_loss_val < 0.01:# or grad < 0.01:
+            print("Stopping condition reached.")
+            break
+
+    print('Saving final network...')
+    saver.save(sess, "chkpts/final.chkpt")
+    print('Total training time: ' + str((time.time() - start_time)/3600) + ' h')
